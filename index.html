@@ -98,7 +98,10 @@ const CONFIG = {
     { url: 'data/oshu_5m_r2c2.tif', name: '奥州 5m(南)' },
     { url: 'data/oshu_5m_r2c3.tif', name: '奥州 5m(南東)' },
   ],
-  layers: [],        // 例 [{ url: 'data/fields.gpkg', name: '圃場' }]
+  // 最初から表示するレイヤ。label=ラベルにする列、fill:false=塗りなし(線だけ。中をクリックすると地点の傾斜が見られる)、color=線の色
+  layers: [
+    { url: 'data/rcom.geojson', name: '農業集落界', label: '集落名', fill: false, color: '#ffffff', weight: 1.5 },
+  ],
   geoName: '傾斜計測.geojson',           // 作業フォルダに保存する計測(続きから作業するときに読み込む方)
   csvName: '傾斜計測.csv',               // 同じ内容の表(Excel用。WKT列に形状)
   // 傾斜区分(度)。境界の値は上の区分に入る(3 → 「3〜8°」)
@@ -617,30 +620,31 @@ function readGeoJSON(text, name) {
 const vlayers = [];
 let layerCtl = null, colorNo = 0;
 const calcable = f => isPolyG(f.geometry) || isLineG(f.geometry);
-async function addVectorFile(file, from, label) {
+async function addVectorFile(file, from, label, opt = {}) {
   const name = label || baseName(file.name);
   if (file.size > 300e6) throw new Error('ファイルが大きすぎます(300MBまで)');
   const list = /\.gpkg$/i.test(file.name) ? await readGpkg(await file.arrayBuffer(), name) : readGeoJSON(await file.text(), name);
-  return list.map(x => addVector(x.name, x.fc, from, x.crs));
+  return list.map(x => addVector(x.name, x.fc, from, x.crs, opt));
 }
-function addVector(name, fc, from, crs) {
-  const color = CONFIG.layerColors[colorNo++ % CONFIG.layerColors.length];
-  const V = { name, from, fc, color, crs, labelField: '', labels: L.layerGroup(), colorField: '', cats: [], hidden: new Set() };
+function addVector(name, fc, from, crs, opt = {}) {
+  const color = opt.color || CONFIG.layerColors[colorNo++ % CONFIG.layerColors.length];
+  const V = { name, from, fc, color, crs, opt, labelField: '', labels: L.layerGroup(), colorField: '', cats: [], hidden: new Set() };
   V.gl = L.geoJSON(fc, {
     style: f => styleFor(V, f),
     pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 5, color, weight: 2 }),
-    onEachFeature: (f, l) => { l.vlayer = V; l.bindPopup(() => featurePopup(V, f), { minWidth: 240, maxWidth: 340 }); },
+    onEachFeature: (f, l) => { l.vlayer = V; Object.defineProperty(f, '_layer', { value: l, writable: true, enumerable: false }); l.bindPopup(() => featurePopup(V, f), { minWidth: 240, maxWidth: 340 }); },
   }).addTo(map);
   layerCtl.addOverlay(V.gl, esc(name));
   vlayers.push(V);
   const keys = Object.keys(fc.features[0]?.properties || {});
-  V.labelField = keys.find(k => /^(name|名前|圃場名|筆名|label)$/i.test(k)) || '';
-  V.colorField = CONFIG.colorFields.find(k => keys.includes(k)) || '';
+  V.labelField = opt.label ?? (keys.find(k => /^(name|名前|圃場名|筆名|集落名|RCOM_NAME|label)$/i.test(k)) || '');
+  V.colorField = opt.colorField ?? (CONFIG.colorFields.find(k => keys.includes(k)) || '');
   drawLabels(V); applyColors(V);
   return V;
 }
 const catOf = (V, f) => { const v = f.properties?.[V.colorField]; return v === null || v === undefined || v === '' ? '(空欄)' : String(v); };
 function styleFor(V, f) {
+  if (V.opt.fill === false && !V.colorField) return { color: V.color, weight: V.opt.weight || 2, opacity: 0.9, fill: false };
   if (!V.colorField) return { color: V.color, weight: 2, fillColor: V.color, fillOpacity: 0.1 };
   const k = catOf(V, f), c = V.catColor?.[k] || '#999';
   if (V.hidden.has(k)) return { opacity: 0, fillOpacity: 0 };
@@ -924,8 +928,41 @@ let ptOn = store.get('slope-pt') !== '0';
 map.on('click', async e => {
   if (!ptOn || drawing || !dems.length) return;
   if (e.originalEvent?.target?.classList?.contains('leaflet-interactive')) return;   // 計測や区画をクリックしたときは、そちらのポップアップ
-  const pop = L.popup({ minWidth: 180 }).setLatLng(e.latlng).setContent('<div class="small">計算中…</div>').openOn(map);
-  pop.setContent(await pointInfo(e.latlng));
+  const pop = L.popup({ minWidth: 200 }).setLatLng(e.latlng).setContent('<div class="small">計算中…</div>').openOn(map);
+  ptHits = featuresAt(e.latlng); ptLL = e.latlng;
+  pop.setContent(await pointInfo(e.latlng) + ptHits.map(([V, f], i) => {
+    const nm = V.labelField ? f.properties[V.labelField] : '', sub = f.properties['旧市町村'] || f.properties['KCITY_NAME'] || '';
+    return `<div class="small" style="margin-top:6px;border-top:1px solid #eee;padding-top:4px"><b>${esc(nm || '(名前なし)')}</b>${sub ? `(${esc(sub)})` : ''} <span class="muted">${esc(V.name)}</span><br>
+      <a class="act" data-pt="calc" data-i="${i}">${f._res ? '傾斜の結果を見る' : 'この区画の傾斜を計算'}</a> ・ <a class="act" data-pt="add" data-i="${i}">計測に追加</a></div>`; }).join(''));
+});
+// 地点を含む区画(表示中のレイヤのポリゴン)
+let ptHits = [], ptLL = null;
+const inRing = (r, x, y) => { let c = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, yi] = r[i], [xj, yj] = r[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+function featuresAt(ll) {
+  const out = [];
+  vlayers.forEach(V => { if (!map.hasLayer(V.gl)) return; V.fc.features.forEach(f => {
+    if (!isPolyG(f.geometry) || !f._layer || !f._layer.getBounds().contains(ll)) return;
+    if (V.colorField && V.hidden.has(catOf(V, f))) return;
+    if (polysOf(f.geometry).some(p => inRing(p[0], ll.lng, ll.lat) && !p.slice(1).some(h => inRing(h, ll.lng, ll.lat)))) out.push([V, f]);
+  }); });
+  return out;
+}
+document.getElementById('map').addEventListener('click', async e => {
+  const a = e.target.closest('.leaflet-popup-content [data-pt]');
+  if (!a) return;
+  const [V, f] = ptHits[+a.dataset.i] || []; if (!f) return;
+  const l = f._layer;
+  if (a.dataset.pt === 'calc') {
+    a.textContent = '計算中…';
+    if (!f._res) try { const r = await calcPoly(f.geometry); f._res = r.res; } catch (err) { alert(err.message); return; }
+    map.closePopup(); l.openPopup(ptLL); l.setPopupContent(featurePopup(V, f));
+    if (l.setStyle) { l.setStyle({ weight: 4, color: '#ffeb3b' }); setTimeout(() => l.setStyle(styleFor(V, f)), 2500); }
+  }
+  if (a.dataset.pt === 'add') {
+    const nm = V.labelField ? String(f.properties[V.labelField] ?? '') : '';
+    const m = addMeasure(f.geometry, { name: nm || V.name, who: editor(), memo: `「${V.name}」から追加` });
+    map.closePopup(); m.openPopup(); await recalc(m); refreshPopup(m); changed();
+  }
 });
 
 // ===================== GeoJSON / CSV =====================
@@ -1245,7 +1282,7 @@ layerCtl = L.control.layers(bases, { '計測': drawn, 'DEMの範囲': demGroup }
   for (const d of CONFIG.dems) try { await addDem(d.url, d.name, 'config'); } catch (e) { console.warn('DEM', d.url, e); }
   for (const v of CONFIG.layers) try {
     const r = await fetch(v.url); if (!r.ok) throw new Error(r.status);
-    await addVectorFile(new File([await r.blob()], v.url.split('/').pop()), 'config', v.name);
+    await addVectorFile(new File([await r.blob()], v.url.split('/').pop()), 'config', v.name, v);
   } catch (e) { console.warn('レイヤ', v.url, e); setStatus(`レイヤ ${v.url} を読み込めませんでした`); }
   try { const c = JSON.parse(store.get('slope-cache') || 'null'); if (c) merge(c); } catch {}
   if (FS) try {
