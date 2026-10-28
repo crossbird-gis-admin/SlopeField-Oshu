@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>傾斜計測マップ</title>
+<title>奥州市傾斜計測アプリ（Cross Bird GIS）</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -69,7 +69,7 @@
 <body>
 <div id="app">
   <header>
-    <h1>傾斜計測マップ</h1>
+    <h1>奥州市傾斜計測アプリ（Cross Bird GIS）</h1>
     <span id="status"></span>
     <div class="tools">
       <button id="locate" title="現在地">現在地</button>
@@ -88,19 +88,36 @@
 // ===================== 設定(ここだけ編集すればOK) =====================
 const CONFIG = {
   // 最初から読み込むDEM・レイヤ(このリポジトリに置いたもの)。ローカルのファイルだけで使うなら [] のまま
-  // 奥州市付近 5mDEM(基盤地図情報 5A、無い所を5Bで補完、平面直角X系 EPSG:6678、標高はcm単位の整数)
-  // 自分で読み込んだDEM(1mなど)があれば、そちらが優先されます
+  // DEM。1mDEM(対象区画の周り20mだけ)を優先し、1mの無い所は5mDEM(5A、無い所は5B)で補う
+  // どちらも平面直角X系(EPSG:6678)、標高はcm単位の整数。自分で読み込んだDEMがあれば、同じ解像度ならそちらが優先
   dems: [
-    { url: 'data/oshu_5m_r1c1.tif', name: '奥州 5m(北西)' },
-    { url: 'data/oshu_5m_r1c2.tif', name: '奥州 5m(北)' },
-    { url: 'data/oshu_5m_r1c3.tif', name: '奥州 5m(北東)' },
-    { url: 'data/oshu_5m_r2c1.tif', name: '奥州 5m(南西)' },
-    { url: 'data/oshu_5m_r2c2.tif', name: '奥州 5m(南)' },
-    { url: 'data/oshu_5m_r2c3.tif', name: '奥州 5m(南東)' },
+    { url: 'data/dem1m_01.tif', name: '1m-01' },
+    { url: 'data/dem1m_02.tif', name: '1m-02' },
+    { url: 'data/dem1m_03.tif', name: '1m-03' },
+    { url: 'data/dem1m_04.tif', name: '1m-04' },
+    { url: 'data/dem1m_05.tif', name: '1m-05' },
+    { url: 'data/dem1m_06.tif', name: '1m-06' },
+    { url: 'data/dem1m_07.tif', name: '1m-07' },
+    { url: 'data/dem1m_08.tif', name: '1m-08' },
+    { url: 'data/dem1m_09.tif', name: '1m-09' },
+    { url: 'data/dem1m_10.tif', name: '1m-10' },
+    { url: 'data/dem1m_11.tif', name: '1m-11' },
+    { url: 'data/dem1m_12.tif', name: '1m-12' },
+    { url: 'data/dem1m_13.tif', name: '1m-13' },
+    { url: 'data/dem1m_14.tif', name: '1m-14' },
+    { url: 'data/oshu_5m_r1c1.tif', name: '5m(北西)' },
+    { url: 'data/oshu_5m_r1c2.tif', name: '5m(北)' },
+    { url: 'data/oshu_5m_r1c3.tif', name: '5m(北東)' },
+    { url: 'data/oshu_5m_r2c1.tif', name: '5m(南西)' },
+    { url: 'data/oshu_5m_r2c2.tif', name: '5m(南)' },
+    { url: 'data/oshu_5m_r2c3.tif', name: '5m(南東)' },
   ],
   // 最初から表示するレイヤ。label=ラベルにする列、fill:false=塗りなし(線だけ。中をクリックすると地点の傾斜が見られる)、color=線の色
+  // select:true = クリックで結果、Ctrl+クリックで選択できるレイヤ。compare = 既存の平均傾斜の列(frac=1/nのn、deg=度)
+  // show:false = 最初は表示しない(右上のレイヤ切替で表示)
   layers: [
-    { url: 'data/rcom.geojson', name: '農業集落界', label: '集落名', fill: false, color: '#ffffff', weight: 1.5 },
+    { url: 'data/area.geojson', name: '対象区画', label: 'T2', colorField: 'T1', select: true, compare: { frac: '平均傾', deg: '平均_1' } },
+    { url: 'data/rcom.geojson', name: '農業集落界', label: '集落名', fill: false, color: '#ffffff', weight: 1.5, show: false },
   ],
   geoName: '傾斜計測.geojson',           // 作業フォルダに保存する計測(続きから作業するときに読み込む方)
   csvName: '傾斜計測.csv',               // 同じ内容の表(Excel用。WKT列に形状)
@@ -179,13 +196,14 @@ const crsName = e => `${CRS[e].label}(EPSG:${e})`;
 const dems = [];        // { name, from, img, ox, oy, dx, dy, W, H, nodata, epsg, tr, frame, bounds }
 const demGroup = L.featureGroup().addTo(map);
 async function addDem(src, name, from) {
-  const tiff = typeof src === 'string' ? await GeoTIFF.fromUrl(src) : await GeoTIFF.fromBlob(src);
+  // cacheSize:読み込んだ64KBブロックを覚えておく数(既定100では、1mDEMの広い範囲を一度に読むと失敗することがある)
+  const tiff = typeof src === 'string' ? await GeoTIFF.fromUrl(src, { cacheSize: 2000 }) : await GeoTIFF.fromBlob(src);
   const img = await tiff.getImage();
   const gk = img.getGeoKeys() || {};
   let epsg = gk.ProjectedCSTypeGeoKey || (gk.GTModelTypeGeoKey === 2 ? (gk.GeographicTypeGeoKey || 4326) : 0);
   if (!CRS[epsg]) { epsg = askCrs(name, epsg); if (!epsg) throw new Error('座標系が指定されませんでした'); }
   const [ox, oy] = img.getOrigin(), [rx, ry] = img.getResolution();
-  const D = { name, from, img, ox, oy, dx: rx, dy: Math.abs(ry), W: img.getWidth(), H: img.getHeight(), nodata: img.getGDALNoData(), epsg, tr: trOf(epsg) };
+  const D = { name, from, img, url: typeof src === 'string' ? src : null, ox, oy, dx: rx, dy: Math.abs(ry), W: img.getWidth(), H: img.getHeight(), nodata: img.getGDALNoData(), epsg, tr: trOf(epsg) };
   // GDALのスケール・オフセット(標高をcm単位の整数で持つDEMなど)。値 = 生の値 × scale + offset
   const md = String(img.fileDirectory.GDAL_METADATA || '');
   const num = role => { const m = md.match(new RegExp(`<Item[^>]*role="${role}"[^>]*>\\s*([-+0-9.eE]+)\\s*<`)); return m ? +m[1] : NaN; };
@@ -206,11 +224,11 @@ function removeDem(D) { demGroup.removeLayer(D.frame); dems.splice(dems.indexOf(
 // 計算に使うDEM:自分で読み込んだものがあればそれだけ(設定で読み込んだサンプルより優先)
 // 解像度(m)。1mと5mのDEMが重なるときは、細かい方を優先して使う
 const resOf = D => metricCell(D, D.bounds.getCenter().lat)[0];
-const fineFirst = ds => [...ds].sort((a, b) => resOf(a) - resOf(b));
+// 細かい順。同じ解像度なら、自分で読み込んだDEMを登録済みのDEMより先に
+const fineFirst = ds => [...ds].sort((a, b) => (resOf(a) - resOf(b)) || ((a.from === 'config') - (b.from === 'config')));
+// 1mを読み込んでも登録済みの5mは外さない(1mの穴は5mで補う)
 function demsFor(b) {
-  let ds = dems.filter(D => D.bounds.intersects(b));
-  if (ds.some(D => D.from !== 'config')) ds = ds.filter(D => D.from !== 'config');
-  return fineFirst(ds);
+  return fineFirst(dems.filter(D => D.bounds.intersects(b)));
 }
 
 const RAD = Math.PI / 180, GA = 6378137, GE2 = 0.00669438002290;
@@ -236,7 +254,7 @@ async function readGrid(D, minx, miny, maxx, maxy, limit, pad = 2) {
   if (cc1 <= cc0 || rr1 <= rr0) return null;
   if ((cc1 - cc0) * (rr1 - rr0) > limit) throw new Error('範囲が広すぎます。もう少し小さくしてください');
   const w = c1 - c0, h = r1 - r0, z = new Float32Array(w * h).fill(NaN);
-  const [band] = await D.img.readRasters({ window: [cc0, rr0, cc1, rr1], samples: [0] });
+  const [band] = await readWin(D, [cc0, rr0, cc1, rr1]);
   const ww = cc1 - cc0;
   for (let r = rr0; r < rr1; r++) for (let c = cc0; c < cc1; c++) {
     const v = band[(r - rr0) * ww + (c - cc0)];
@@ -245,6 +263,16 @@ async function readGrid(D, minx, miny, maxx, maxy, limit, pad = 2) {
     if (e > -9000) z[(r - r0) * w + (c - c0)] = e;
   }
   return { D, z, w, h, c0, r0 };
+}
+// geotiff.js(2.1.3)は、URLから読むとき、タイルの終わりがちょうど64KBの区切りに来ると読み損ねる。
+// そのときだけ、区切りの大きさを変えて開き直して読む
+async function readWin(D, win) {
+  try { return await D.img.readRasters({ window: win, samples: [0] }); }
+  catch (e) {
+    if (!D.url) throw e;
+    D.img2 ||= await (await GeoTIFF.fromUrl(D.url, { blockSize: 65536 + 4096 * 3 + 7, cacheSize: 2000 })).getImage();
+    return await D.img2.readRasters({ window: win, samples: [0] });
+  }
 }
 // Horn法(3×3)の傾き。gx = 東向きの dz/dx、gy = 南向きの dz/dy(行は南へ進む)
 function horn(G, r, c, mx, my) {
@@ -289,14 +317,15 @@ async function calcPoly(geom) {
   const tr = measureTr(ds, clat, clng);
   const proj = polys.reduce((a, p) => { const rs = p.map(r => r.map(c => tr.forward([c[0], c[1]])));
     return a + ringArea(rs[0]) - rs.slice(1).reduce((b, h) => b + ringArea(h), 0); }, 0);
-  const A = { n: 0, sec: 0, deg: 0, deg2: 0, min: Infinity, max: -Infinity, hist: new Uint32Array(901), cls: new Array(CL.length + 1).fill(0),
+  const A = { n: 0, sec: 0, deg: 0, deg2: 0, min: Infinity, max: -Infinity, hist: new Float64Array(901), W: 0, wFine: 0, cls: new Array(CL.length + 1).fill(0),
               zmin: Infinity, zmax: -Infinity, okArea: 0, z0: NaN, sx: 0, sy: 0, sz: 0, sxx: 0, sxy: 0, syy: 0, sxz: 0, syz: 0, szz: 0 };
   A.grids = [];
   for (const D of ds) await polyCells(D, polys, clat, clng, A);   // 細かいDEMから順に。値のある所は粗いDEMで数えない
   const res = { 投影面積_m2: r2(proj, 1) };
   if (!A.n) return { res: { ...res, DEM被覆率: 0 } };
+  // 統計はすべてセルの面積で重み付け(1mと5mのDEMが混ざっても面積どおりになる)
   // 平面近似 z = a·x + b·y + c(x=東、y=北、m)
-  const N = A.n, mx = A.sx / N, my = A.sy / N, mz = A.sz / N;
+  const N = A.W, mx = A.sx / N, my = A.sy / N, mz = A.sz / N;
   const cxx = A.sxx / N - mx * mx, cxy = A.sxy / N - mx * my, cyy = A.syy / N - my * my, cxz = A.sxz / N - mx * mz, cyz = A.syz / N - my * mz, czz = A.szz / N - mz * mz;
   const det = cxx * cyy - cxy * cxy;
   let pa = NaN, pb = NaN, rsd = NaN;
@@ -319,6 +348,7 @@ async function calcPoly(geom) {
   });
   A.cls.forEach((c, k) => res[classKey(k)] = r2(c / N * 100, 1));
   res.DEM被覆率 = r2(Math.min(1, A.okArea / proj), 3);
+  res['1mDEM割合'] = r2(Math.min(1, A.wFine / proj), 3);   // 1m(以下)のDEMで計算した面積の割合
   return { res };
 }
 // 範囲内のセル(セル中心が範囲内)を1枚のDEMについて集計
@@ -349,14 +379,15 @@ async function polyCells(D, polys, clat, clng, A) {
           if (finer.some(F => sampleGrid(F, ll)?.g)) continue;   // 細かいDEMで傾斜が出る所は、そちらで数えた
         }
         nHere++;
-        const z = G.z[r * G.w + c];
+        const z = G.z[r * G.w + c], wt = mx * my;
         if (!Number.isFinite(A.z0)) A.z0 = z;
         const sl = slopeDeg(g[0], g[1]), sec = Math.sqrt(1 + g[0] * g[0] + g[1] * g[1]);
         const px = (D.ox + (G.c0 + c + 0.5) * D.dx - X0) / D.dx * mx, zz = z - A.z0;
-        A.n++; A.sec += sec; A.deg += sl; A.deg2 += sl * sl; A.min = Math.min(A.min, sl); A.max = Math.max(A.max, sl);
-        A.hist[Math.min(900, Math.floor(sl * 10))]++; A.cls[classOf(sl)]++;
+        if (wt <= 2.25) A.wFine += wt;
+        A.n++; A.W += wt; A.sec += sec * wt; A.deg += sl * wt; A.deg2 += sl * sl * wt; A.min = Math.min(A.min, sl); A.max = Math.max(A.max, sl);
+        A.hist[Math.min(900, Math.floor(sl * 10))] += wt; A.cls[classOf(sl)] += wt;
         A.zmin = Math.min(A.zmin, z); A.zmax = Math.max(A.zmax, z);
-        A.sx += px; A.sy += py; A.sz += zz; A.sxx += px * px; A.sxy += px * py; A.syy += py * py; A.sxz += px * zz; A.syz += py * zz; A.szz += zz * zz;
+        A.sx += px * wt; A.sy += py * wt; A.sz += zz * wt; A.sxx += px * px * wt; A.sxy += px * py * wt; A.syy += py * py * wt; A.sxz += px * zz * wt; A.syz += py * zz * wt; A.szz += zz * zz * wt;
       }
     }
   }
@@ -372,7 +403,7 @@ async function sampleAll(pts) {
     let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
     part.forEach(([x, y]) => { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); });
     const b = L.latLngBounds([s, w], [n, e]);
-    const ds = [...fineFirst(dems.filter(D => D.from !== 'config')), ...dems.filter(D => D.from === 'config')].filter(D => D.bounds.intersects(b));
+    const ds = demsFor(b);
     const grids = [];
     for (const D of ds) {
       const G = await readGrid(D, ...boxIn(D, w, s, e, n), CONFIG.maxCells, 3);
@@ -628,22 +659,84 @@ async function addVectorFile(file, from, label, opt = {}) {
 }
 function addVector(name, fc, from, crs, opt = {}) {
   const color = opt.color || CONFIG.layerColors[colorNo++ % CONFIG.layerColors.length];
-  const V = { name, from, fc, color, crs, opt, labelField: '', labels: L.layerGroup(), colorField: '', cats: [], hidden: new Set() };
+  const V = { name, from, fc, color, crs, opt, labelField: '', labels: L.layerGroup(), colorField: '', cats: [], hidden: new Set(), sel: new Set() };
+  // 計算済みの結果を持つファイル(書き出したGeoJSONなど)は、結果を属性から分けて持つ
+  fc.features.forEach(f => { const p = f.properties || {};
+    if (p['平均傾斜_度'] === undefined && p['平均勾配_度'] === undefined) return;
+    const r = {}; Object.keys(p).forEach(k => { if (RES_KEYS.has(k)) { r[k] = p[k] === '' ? '' : (typeof p[k] === 'string' && /^-?[0-9.]+$/.test(p[k]) ? +p[k] : p[k]); delete p[k]; } });
+    f._res = r; V.done = true; });
   V.gl = L.geoJSON(fc, {
     style: f => styleFor(V, f),
     pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 5, color, weight: 2 }),
-    onEachFeature: (f, l) => { l.vlayer = V; Object.defineProperty(f, '_layer', { value: l, writable: true, enumerable: false }); l.bindPopup(() => featurePopup(V, f), { minWidth: 240, maxWidth: 340 }); },
+    onEachFeature: (f, l) => { l.vlayer = V; Object.defineProperty(f, '_layer', { value: l, writable: true, enumerable: false }); l.bindPopup(() => featurePopup(V, f), { minWidth: 240, maxWidth: 340 });
+      l.off('click', l._openPopup, l); l.on('click', e => featClick(V, f, l, e)); },
   }).addTo(map);
+  if (opt.show === false) V.gl.remove();
   layerCtl.addOverlay(V.gl, esc(name));
   vlayers.push(V);
   const keys = Object.keys(fc.features[0]?.properties || {});
   V.labelField = opt.label ?? (keys.find(k => /^(name|名前|圃場名|筆名|集落名|RCOM_NAME|label)$/i.test(k)) || '');
   V.colorField = opt.colorField ?? (CONFIG.colorFields.find(k => keys.includes(k)) || '');
+  if (opt.select) restoreSel(V);
   drawLabels(V); applyColors(V);
   return V;
 }
+// ---------- 区画の選択 ----------
+let selMode = store.get('slope-selmode') === '1';
+function featClick(V, f, l, e) {
+  const o = e.originalEvent || {};
+  if (V.opt.select && (o.ctrlKey || o.metaKey || o.shiftKey || selMode)) { L.DomEvent.stop(e); toggleSel(V, f); return; }
+  l.openPopup(e.latlng);
+}
+const selKey = V => 'slope-sel:' + V.name;
+function toggleSel(V, f, on) {
+  const want = on === undefined ? !V.sel.has(f) : on;
+  want ? V.sel.add(f) : V.sel.delete(f);
+  if (f._layer) f._layer.setStyle(styleFor(V, f));
+  if (want && f._layer?.bringToFront) f._layer.bringToFront();
+  selChanged(V);
+}
+let selTimer = null;
+function selChanged(V) {
+  clearTimeout(selTimer);
+  selTimer = setTimeout(() => { store.set(selKey(V), JSON.stringify(V.fc.features.map((f, i) => V.sel.has(f) ? i : -1).filter(i => i >= 0))); render(); }, 50);
+}
+function restoreSel(V) {
+  try { JSON.parse(store.get(selKey(V)) || '[]').forEach(i => { const f = V.fc.features[i]; if (f) V.sel.add(f); }); } catch {}
+}
+function setSel(V, fs, on) { fs.forEach(f => { on ? V.sel.add(f) : V.sel.delete(f); if (f._layer) f._layer.setStyle(styleFor(V, f)); }); selChanged(V); }
+const visibleFs = V => V.fc.features.filter(f => !(V.colorField && V.hidden.has(catOf(V, f))));
+// 選択した区画を書き出す(結果の無い区画は先に計算)。作業フォルダがあればそこにも保存
+async function exportSel(V, kind) {
+  const fs = V.fc.features.filter(f => V.sel.has(f));
+  if (!fs.length) return alert('区画が選択されていません');
+  for (let i = 0; i < fs.length; i++) if (!fs[i]._res) {
+    setStatus(`選択した区画を計算中… ${i + 1} / ${fs.length}`);
+    try { fs[i]._res = (await calcPoly(fs[i].geometry)).res; } catch (e) { fs[i]._res = { エラー: e.message }; }
+  }
+  setStatus('');
+  const rows = fs.map(f => { const c = f._layer?.getBounds?.().getCenter();
+    return { ...f.properties, ...f._res, 中心緯度: c ? +c.lat.toFixed(7) : '', 中心経度: c ? +c.lng.toFixed(7) : '' }; });
+  const props = [...new Set(fs.flatMap(f => Object.keys(f.properties || {})))].filter(k => !k.startsWith('_'));
+  const resk = ORDER.filter(k => rows.some(r => r[k] !== undefined && r[k] !== ''));
+  const name = `${V.name}_選択${fs.length}区画_傾斜_${nowStr().slice(0, 10)}`;
+  if (kind === 'geo') return saveOut(`${name}.geojson`, JSON.stringify({ type: 'FeatureCollection',
+    features: fs.map((f, i) => ({ type: 'Feature', properties: rows[i], geometry: round7g(f.geometry) })) }), 'application/geo+json');
+  saveOut(`${name}.csv`, csvText([...props, ...resk, 'エラー', '中心緯度', '中心経度'].filter(k => k !== 'エラー' || rows.some(r => r.エラー)), rows), 'text/csv');
+}
+async function saveOut(name, text, type) {
+  if (dir && dirReady) try {
+    const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(text); await w.close();
+    setStatus(`作業フォルダに「${name}」を保存しました`); return;
+  } catch (e) { setStatus('フォルダに保存できませんでした:' + e.message); }
+  save(name, text, type);
+}
 const catOf = (V, f) => { const v = f.properties?.[V.colorField]; return v === null || v === undefined || v === '' ? '(空欄)' : String(v); };
 function styleFor(V, f) {
+  const s = baseStyle(V, f);
+  return V.sel.has(f) && s.opacity !== 0 ? { ...s, color: '#ffeb3b', weight: 4, opacity: 1, fillOpacity: Math.max(s.fillOpacity || 0, 0.45), fill: true } : s;
+}
+function baseStyle(V, f) {
   if (V.opt.fill === false && !V.colorField) return { color: V.color, weight: V.opt.weight || 2, opacity: 0.9, fill: false };
   if (!V.colorField) return { color: V.color, weight: 2, fillColor: V.color, fillOpacity: 0.1 };
   const k = catOf(V, f), c = V.catColor?.[k] || '#999';
@@ -695,17 +788,28 @@ function updateLabels() {
 }
 map.on('zoomend overlayadd overlayremove', updateLabels);
 
-const RESKEY = /^(投影面積_m2|表面積_m2|面積比|全体|傾斜|平面近似|平均|最大|最小|最高|最低|標高差|直払|DEM被覆率|水平距離|斜距離|始点|終点|累積|線上)/;
+// 既存の平均傾斜(区画の属性)との比較
+function compareHtml(V, f) {
+  const c = V.opt.compare, p = f.properties || {}, r = f._res; if (!c || !r) return '';
+  const n = +p[c.frac], d = +p[c.deg];
+  if (!(n > 0) && !Number.isFinite(d)) return '';
+  const old = n > 0 ? `1/${n}(${(Math.atan(1 / n) / RAD).toFixed(1)}°)` : `${d.toFixed(1)}°`;
+  return `<div class="small" style="margin:4px 0;padding:4px 6px;background:#f6f3ee;border-radius:4px">既存の平均傾斜 <b>${esc(old)}</b>${n > 0 && Number.isFinite(d) ? ` ・ 度の列 ${d}°` : ''}<br>
+    このDEMでの全体の傾き <b>${esc(r.全体勾配_分数 || '—')}(${has(r, '全体傾斜_度') ? r.全体傾斜_度.toFixed(1) : '—'}°)</b>
+    ${has(r, '1mDEM割合') ? `<br><span class="muted">1mDEMで計算した割合 ${nf(r['1mDEM割合'] * 100, 0)}%(残りは5m)</span>` : ''}</div>`;
+}
 function featurePopup(V, f) {
   const p = f.properties || {};
-  const rows = Object.keys(p).filter(k => p[k] !== null && p[k] !== '' && !(f._res && RESKEY.test(k))).slice(0, 30)
+  const rows = Object.keys(p).filter(k => p[k] !== null && p[k] !== '' && !RES_KEYS.has(k)).slice(0, 30)
     .map(k => `<tr><th>${esc(k)}</th><td>${esc(p[k])}</td></tr>`).join('');
   const sw = V.colorField ? V.catColor[catOf(V, f)] : V.color;
   const line = isLineG(f.geometry);
   return `<b style="color:${sw}">■</b> <b>${esc(V.name)}</b>${V.colorField ? ` ・ ${esc(catOf(V, f))}` : ''}
     <div class="attr"><table>${rows || '<tr><td class="muted">属性なし</td></tr>'}</table></div>
+    ${compareHtml(V, f)}
     ${f._res ? (line ? lineHtml(f._res, f._prof) : polyHtml(f._res)) : ''}
-    ${calcable(f) ? `<div class="small" style="margin-top:4px">${f._res ? '' : '<a class="act" data-act="fcalc">傾斜を計算</a> ・ '}<a class="act" data-act="fadd">計測に追加</a></div>` : ''}`;
+    ${calcable(f) ? `<div class="small" style="margin-top:4px">${V.opt.select ? `<a class="act" data-act="fsel">${V.sel.has(f) ? '選択を外す' : '選択する'}</a> ・ ` : ''}<a class="act" data-act="fcalc">${f._res ? '計算し直す' : '傾斜を計算'}</a> ・ <a class="act" data-act="fadd">計測に追加</a></div>` : ''}
+    ${V.opt.select ? '<div class="small muted">Ctrl(またはShift)+クリックで、ポップアップを出さずに選択/解除</div>' : ''}`;
 }
 async function bulkCalc(V) {
   const fs = V.fc.features.filter(calcable);
@@ -738,7 +842,7 @@ async function drawSlopeMap() {
   const b = map.getBounds(), size = map.getSize(), k = Math.min(1, 1400 / Math.max(size.x, size.y));
   const W = Math.round(size.x * k), H = Math.round(size.y * k);
   // 粗いDEMから描き、細かいDEMで上書きする(1mの穴は5mで埋まる)
-  const ds = [...dems.filter(D => D.from === 'config'), ...fineFirst(dems.filter(D => D.from !== 'config')).reverse()].filter(D => D.bounds.intersects(b));
+  const ds = demsFor(b).reverse();
   if (!ds.length) return clear('表示範囲にDEMがありません');
   sm.msg = '描いています…'; render();
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
@@ -883,6 +987,7 @@ document.getElementById('map').addEventListener('click', async e => {
   const act = a.dataset.act;
   if (act === 'name' && drawn.hasLayer(popLayer)) rename(popLayer);
   if (act === 'pcsv' && drawn.hasLayer(popLayer)) saveProfile(popLayer);
+  if (act === 'fsel') { const f = popLayer.feature, V = popLayer.vlayer; toggleSel(V, f); popLayer.setPopupContent(featurePopup(V, f)); }
   if (act === 'fcalc') {
     const f = popLayer.feature, l = popLayer; a.textContent = '計算中…';
     try { const r = await (isLineG(f.geometry) ? calcLine : calcPoly)(f.geometry); f._res = r.res; f._prof = r.prof; } catch (err) { alert(err.message); }
@@ -970,7 +1075,8 @@ const META = ['計測ID', '種類', '名前', 'メモ', '中心緯度', '中心�
 const ORDER = ['全体傾斜_度', '全体勾配_pct', '全体勾配_分数', '傾斜方位_度', '傾斜方位', '平面近似残差_m', '平均傾斜_度', '傾斜中央値_度', '傾斜P90_度', '最大傾斜_度', '最小傾斜_度', '傾斜SD_度',
   '平均勾配_度', '平均勾配_pct', '平均勾配_分数', '最大勾配_度', '最大勾配_pct', '最大勾配の位置_m', '線上の平均傾斜_度', '線上の最大傾斜_度',
   '水平距離_m', '斜距離_m', '始点標高_m', '終点標高_m', '標高差_m', '最高標高_m', '最低標高_m', '平均標高_m', '累積上り_m', '累積下り_m',
-  '投影面積_m2', '表面積_m2', '面積比', '直払目安_田', '直払目安_畑', ...CLASS_KEYS, 'DEM被覆率'];
+  '投影面積_m2', '表面積_m2', '面積比', '直払目安_田', '直払目安_畑', ...CLASS_KEYS, 'DEM被覆率', '1mDEM割合'];
+const RES_KEYS = new Set([...ORDER, 'エラー']);
 const sorted = () => [...byMid.values()].sort((a, b) => a.created.localeCompare(b.created));
 function propsOf(l) {
   const c = l.getBounds().getCenter();
@@ -1157,6 +1263,15 @@ function fitAll() {
 
 // ===================== 右パネル =====================
 const FROM = { config: '登録済み', folder: 'フォルダ', added: '追加' };
+function selBox(V, i) {
+  const fs = [...V.sel], ha = fs.reduce((t, f) => t + (+f.properties?.['区画面積_m2'] || (f._res && +f._res.投影面積_m2) || 0), 0) / 1e4;
+  const done = fs.filter(f => f._res).length;
+  return `<div class="small">選択 <b>${nf(fs.length)}</b> 区画${fs.length ? `(${nf(ha, 1)} ha${done < fs.length ? `、未計算 ${fs.length - done}` : ''})` : ''}
+      ・ <a class="act" data-sela="view" data-vec="${i}">表示範囲を選択</a> ・ <a class="act" data-sela="all" data-vec="${i}">すべて選択</a>${fs.length ? ` ・ <a class="act" data-sela="fit" data-vec="${i}">選択へ移動</a> ・ <a class="act" data-sela="clear" data-vec="${i}">解除</a>` : ''}</div>
+    ${fs.length ? `<div class="btns" style="margin:5px 0"><button class="main" data-sela="csv" data-vec="${i}">選択した区画をCSVで書き出し</button><button data-sela="geo" data-vec="${i}">GeoJSON</button></div>` : ''}
+    <label class="chk small"><input type="checkbox" data-selmode="1" ${selMode ? 'checked' : ''}>クリックで選択する(ポップアップを出さない)</label>
+    <div class="small muted">区画をクリック → 結果。Ctrl(またはShift)+クリック → 選択/解除。選択はこのブラウザに記憶されます。</div>`;
+}
 function cardHtml(l) {
   const r = l.res;
   let num;
@@ -1205,18 +1320,21 @@ function render() {
       <div class="small muted">${nf(V.fc.features.length)} 地物(計算できるもの ${nf(np)})${V.crs ? ' ・ ' + esc(V.crs) : ''}</div>
       <div class="small">色分け <select data-vec="${i}" data-sel="color">${['', ...keys].map(k => `<option ${k === V.colorField ? 'selected' : ''} value="${esc(k)}">${k ? esc(k) : '(しない)'}</option>`).join('')}</select></div>
       ${V.colorField ? `<div style="margin:3px 0 2px">${V.cats.map(k => `<div class="cat ${V.hidden.has(k) ? 'off' : ''}" data-vec="${i}" data-cat="${esc(k)}" title="クリックで表示/非表示">
-          <span><i style="background:${V.catColor[k]}"></i>${esc(k)}</span><span class="n">${V.catCount[k]} 地物</span></div>`).join('')}</div>` : ''}
+          <span><i style="background:${V.catColor[k]}"></i>${esc(k)}</span><span class="n">${V.catCount[k]} 地物${V.opt.select ? ` <a class="act" data-catsel="${esc(k)}" data-vec="${i}" title="この種類をすべて選択">選択</a>` : ''}</span></div>`).join('')}</div>` : ''}
       <div class="small">ラベル <select data-vec="${i}" data-sel="label">${['', ...keys].map(k => `<option ${k === V.labelField ? 'selected' : ''} value="${esc(k)}">${k ? esc(k) : '(なし)'}</option>`).join('')}</select></div>
-      <div class="small"><a class="act" data-vec="${i}" data-a="fit">表示</a>${np ? ` ・ <a class="act" data-vec="${i}" data-a="bulk">全地物の傾斜を計算</a>` : ''}
+      <div class="small"><a class="act" data-vec="${i}" data-a="fit">表示</a>${np ? ` ・ <a class="act" data-vec="${i}" data-a="bulk">${V.done ? '全地物を計算し直す' : '全地物の傾斜を計算'}</a>` : ''}
         ${V.done ? ` ・ 書き出し <a class="act" data-vec="${i}" data-a="csv">CSV</a> <a class="act" data-vec="${i}" data-a="geo">GeoJSON</a>` : ''}</div></div>
       ${V.from === 'folder' ? '' : `<span class="x" data-vec="${i}" data-a="rm" title="外す">×</span>`}</div>`;
   }).join('');
   const nA = ls.filter(l => l.kind === 'area').length, nL = ls.length - nA;
   const panel = $('panel');
+  const selV = vlayers.filter(V => V.opt.select);
   const scroll = panel.scrollTop;
   panel.innerHTML = `
+    ${selV.map(V => `<div class="box"><h3>${esc(V.name)}の選択</h3>${selBox(V, vlayers.indexOf(V))}</div>`).join('')}
     <div class="box"><h3>作業フォルダ</h3>${folder}</div>
-    <div class="box"><h3>DEM(${dems.length})</h3>${demList || '<div class="small warn">DEMがありません。傾斜の計算にはDEM(GeoTIFF)が必要です。地図にドラッグ&ドロップしても読み込めます。</div>'}
+    <div class="box"><h3>DEM(${dems.length})</h3>${!demList ? '<div class="small warn">DEMがありません。傾斜の計算にはDEM(GeoTIFF)が必要です。地図にドラッグ&ドロップしても読み込めます。</div>'
+      : dems.length > 6 ? `<details><summary class="small">${Object.entries(dems.reduce((t, D) => { const k = `${+resOf(D).toFixed(2)}m${D.from === 'config' ? '' : '(' + FROM[D.from] + ')'}`; t[k] = (t[k] || 0) + 1; return t; }, {})).map(([k, n]) => `${esc(k)} ${n}枚`).join(' ・ ')}(細かい方を優先)</summary>${demList}</details>` : demList}
       <div class="btns" style="margin-top:6px"><button id="addDem">DEMを追加(.tif)</button></div>
       <label class="chk" style="margin-top:6px"><input type="checkbox" id="ptOn" ${ptOn ? 'checked' : ''}>地図をクリックして、その地点の標高・傾斜を見る</label></div>
     <div class="box"><h3>傾斜区分図</h3>
@@ -1260,6 +1378,19 @@ function render() {
     if (s.dataset.sel === 'color') { V.colorField = s.value; V.hidden.clear(); applyColors(V); render(); }
     else { V.labelField = s.value; drawLabels(V); }
   });
+  panel.querySelectorAll('[data-catsel]').forEach(a => a.onclick = ev => {
+    ev.stopPropagation(); const V = vlayers[+a.dataset.vec], k = a.dataset.catsel;
+    setSel(V, V.fc.features.filter(f => catOf(V, f) === k), true);
+  });
+  panel.querySelectorAll('[data-sela]').forEach(a => a.onclick = () => {
+    const V = vlayers[+a.dataset.vec], k = a.dataset.sela;
+    if (k === 'all') setSel(V, visibleFs(V), true);
+    if (k === 'view') { const b = map.getBounds(); setSel(V, visibleFs(V).filter(f => f._layer && b.contains(f._layer.getBounds().getCenter())), true); }
+    if (k === 'clear') setSel(V, [...V.sel], false);
+    if (k === 'fit' && V.sel.size) { const b = L.latLngBounds([]); V.sel.forEach(f => b.extend(f._layer.getBounds())); map.fitBounds(b, { maxZoom: 17, padding: [30, 30] }); }
+    if (k === 'csv' || k === 'geo') exportSel(V, k);
+  });
+  panel.querySelectorAll('input[data-selmode]').forEach(c => c.onchange = e => { selMode = e.target.checked; store.set('slope-selmode', selMode ? '1' : '0'); render(); });
   panel.querySelectorAll('.cat[data-vec]').forEach(d => d.onclick = () => {
     const V = vlayers[+d.dataset.vec], k = d.dataset.cat;
     V.hidden.has(k) ? V.hidden.delete(k) : V.hidden.add(k);
